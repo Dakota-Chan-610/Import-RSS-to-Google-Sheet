@@ -1,0 +1,46 @@
+function importRssFeeds() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const importSheet = spreadsheet.getSheetByName('Import RSS');
+  const historySheet = spreadsheet.getSheetByName('History RSS');
+
+  const rssUrls = importSheet.getRange('A:A').getValues().flat().filter(url => url);
+
+  const data = [['Title', 'Link', 'Published Date', 'Description', 'Source RSS']]; // Header row
+
+  rssUrls.forEach(url => {
+    try {
+      const response = UrlFetchApp.fetch(url);
+      const xml = XmlService.parse(response.getContentText());
+      const items = xml.getRootElement().getChild('channel').getChildren('item');
+
+      items.forEach(item => {
+        const title = item.getChild('title') ? item.getChild('title').getText() : 'No Title';
+        const link = item.getChild('link') ? item.getChild('link').getText() : 'No Link';
+        let pubDate = item.getChild('pubDate') ? item.getChild('pubDate').getText() : 'No Date';
+        const description = item.getChild('description') ? item.getChild('description').getText() : 'No Description';
+
+        // Extract date from title if pubDate is missing
+        if (pubDate === 'No Date') {
+          const dateMatch = title.match(/\(([^)]+)\)$/);
+          if (dateMatch) {
+            pubDate = dateMatch[1];
+          }
+        }
+
+        data.push([title, link, pubDate, description, url]);
+      });
+    } catch (error) {
+      Logger.log('Error fetching RSS feed: ' + url + ' - ' + error);
+    }
+  });
+
+  historySheet.clear();
+  historySheet.getRange(1, 1, data.length, data[0].length).setValues(data);
+}
+
+function createTrigger() {
+  ScriptApp.newTrigger('importRssFeeds')
+    .timeBased()
+    .everyHours(24) // Set the frequency of updates
+    .create();
+}
