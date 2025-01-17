@@ -1,0 +1,86 @@
+function importNewRssFeeds() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const importSheet = spreadsheet.getSheetByName('Import RSS');
+  const historySheet = spreadsheet.getSheetByName('History RSS');
+  const timestampSheet = spreadsheet.getSheetByName('Refresh History') || spreadsheet.insertSheet('Refresh History');
+
+  const rssUrls = importSheet.getRange('A:A').getValues().flat().filter(url => url);
+  const existingData = historySheet.getRange(2, 1, historySheet.getLastRow() - 1, historySheet.getLastColumn()).getValues(); // Exclude header
+  const existingLinks = new Set(existingData.map(row => row[1])); // Assuming link is in the second column
+
+  const newData = []; // Array to hold new entries (without header)
+
+  rssUrls.forEach(url => {
+    try {
+      const response = fetchWithRetry(url);
+      if (response) {
+        const xml = XmlService.parse(response.getContentText());
+        const items = xml.getRootElement().getChild('channel').getChildren('item');
+
+        items.forEach(item => {
+          const title = item.getChild('title') ? item.getChild('title').getText() : 'No Title';
+          const link = item.getChild('link') ? item.getChild('link').getText() : 'No Link';
+          let pubDate = item.getChild('pubDate') ? item.getChild('pubDate').getText() : 'No Date';
+          let description = item.getChild('description') ? item.getChild('description').getText() : 'No Description';
+
+          // Extract date from title if pubDate is missing
+          if (pubDate === 'No Date') {
+            const dateMatch = title.match(/\(([^)]+)\)$/);
+            if (dateMatch) {
+              pubDate = dateMatch[1];
+            }
+          }
+
+          // Convert HTML description to plain text
+          description = HtmlService.createHtmlOutput(description).getContent().replace(/<[^>]*>/g, '');
+
+          // Check if the link already exists
+          if (!existingLinks.has(link)) {
+            newData.push([title, link, pubDate, description, url]);
+          }
+        });
+      }
+    } catch (error) {
+      Logger.log(`Error fetching RSS feed: ${url} - ${error}`);
+    }
+  });
+
+  // If there are new entries, prepend them to existing data and write back
+  if (newData.length > 0) { // Only proceed if there are new entries
+    const combinedData = newData.concat(existingData); // New data on top of existing data
+    historySheet.clear(); // Clear existing data including header
+    historySheet.appendRow(['Title', 'Link', 'Published Date', 'Description', 'Source RSS']); // Re-add header
+    historySheet.getRange(2, 1, combinedData.length, combinedData[0].length).setValues(combinedData); // Write combined data starting from row 2
+  }
+
+  // Log the number of rows updated
+  Logger.log(`Number of new rows added: ${newData.length}`);
+
+  // Add the current timestamp and rows updated to the Refresh History sheet
+  const timestamp = new Date();
+  timestampSheet.appendRow([timestamp, newData.length]);
+}
+
+function fetchWithRetry(url, retries = 3) {
+  let response;
+  for (let i = 0; i < retries; i++) {
+    try {
+      response = UrlFetchApp.fetch(url, {
+        muteHttpExceptions: true,
+        timeout: 60000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
+        }
+      });
+      if (response.getResponseCode() === 200) {
+        return response;
+      }
+    } catch (e) {
+      Logger.log('Fetch attempt ' + (i + 1) + ' failed for ' + url + ': ' + e);
+      if (i === retries - 1) {
+        throw e; // Rethrow the error after the last retry
+      }
+    }
+  }
+  return null;
+}
